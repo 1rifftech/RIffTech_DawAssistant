@@ -8,8 +8,10 @@ const app = express();
 const port = 3000;
 
 // expose mixerState from decoder and enhanced functionality
-const { mixerState } = require('./mcu/mcu-decoder');
-const { processEnhancedMCUMessage, getEnhancedMixerState, MCU } = require('./mcu-decoder');
+const { mixerState } = require('./mcu/mcu-decoder.js');
+const { processEnhancedMCUMessage, getEnhancedMixerState, MCU } = require('./mcu/mcu-decoder.js');
+
+const { decodeMCUMessage, decodeSysEx } = require('./mcu/mcu-decoder');
 
 // serve static files from /public
 app.use(express.static('public'));
@@ -85,13 +87,7 @@ connectIACBus2Only();
 // Enhanced MIDI input handling
 input.on('message', (deltaTime, message) => {
   // Process with enhanced decoder
-  const decoded = processEnhancedMCUMessage(message);
-  
-  if (decoded) {
-    console.log(`[Enhanced MCU] ${decoded.type}:`, decoded);
-    // Handle specific events if needed
-    handleEnhancedMCUEvent(decoded);
-  }
+      decodeMCUMessage(message);
 });
 
 function handleEnhancedMCUEvent(event) {
