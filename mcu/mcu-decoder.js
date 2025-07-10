@@ -1,90 +1,79 @@
-// mixer-state/mcu-decoder.js
+// Example of how to integrate the enhanced decoder into your existing midiAssistant.js
 
-const mixerState = {}; // State per channel
-const trackNameBuffers = {}; // Buffer for track name assembly
-const { logMixerEvent, db } = require('../mixer-state/database');
+require('dotenv').config();
+const midi = require('midi');
+const express = require('express');
+const { processEnhancedMCUMessage, getEnhancedMixerState, MCU } = require('./mcu-decoder');
 
-function update(channel, key, value) {
-  if (!mixerState[channel]) mixerState[channel] = {};
-  mixerState[channel][key] = value;
-  logMixerEvent(channel, key, value);
-  console.log(`CH ${channel} | ${key}: ${value}`);
-}
+// Replace your existing MCU decoder with the enhanced version
+const input = new midi.Input();
 
-function decodeSysEx(data) {
-  if (
-    data.length !== 10 ||
-    data[0] !== 0xF0 || data[1] !== 0x00 || data[2] !== 0x00 ||
-    data[3] !== 0x66 || data[4] !== 0x14 || data[5] !== 0x12
-  ) return;
+// Your existing MIDI input handling, but with enhanced processing
+input.on('message', (deltaTime, message) => {
+  // Use the enhanced decoder instead of your current one
+  const decoded = processEnhancedMCUMessage(message);
+  
+  if (decoded) {
+    // Your existing logic for handling decoded messages
+    handleMCUEvent(decoded);
+  }
+});
 
-  const offset = data[7];
-  const charCode = data[8];
-  const channel = Math.floor(offset / 7) + 1;
-  const charIndex = offset % 7;
-
-  if (!trackNameBuffers[channel]) trackNameBuffers[channel] = [];
-  trackNameBuffers[channel][charIndex] = String.fromCharCode(charCode);
-
-  const buffer = trackNameBuffers[channel];
-  if (buffer.filter(Boolean).length === 7) {
-    const name = buffer.join('').trim();
-    mixerState[channel] = mixerState[channel] || {};
-    mixerState[channel].name = name;
-
-    logMixerEvent(channel, 'name', name);
-    if (db) {
-      db.run(
-        `INSERT OR REPLACE INTO tracks (track_id, name, last_updated) VALUES (?, ?, CURRENT_TIMESTAMP)`,
-        [channel, name],
-        (err) => {
-          if (err) console.error(`DB error updating track name: ${err.message}`);
-        }
-      );
-    }
-
-    console.log(`CH ${channel} | name: ${name}`);
+function handleMCUEvent(event) {
+  switch (event.type) {
+    case 'fader':
+      console.log(`Fader ${event.channel}: ${event.value}`);
+      // Your existing fader handling
+      break;
+      
+    case 'note_on':
+      if (event.action === 'mute') {
+        console.log(`Mute ${event.channel}: ${event.value}`);
+      } else if (event.action === 'transport') {
+        console.log(`Transport ${event.control}: ${event.velocity > 0}`);
+      }
+      break;
+      
+    case 'encoder':
+      console.log(`Encoder ${event.channel}: ${event.direction > 0 ? 'CW' : 'CCW'} speed ${event.speed}`);
+      break;
+      
+    case 'track_name':
+      console.log(`Track ${event.channel} name: "${event.name}"`);
+      break;
   }
 }
 
-function decodeMessage(...args) {
-  if (Array.isArray(args[0]) && args[0][0] === 0xF0) {
-    decodeSysEx(args[0]);
-    return;
-  }
+// Enhanced API routes with the new state
+app.get('/api/mixer-state', (req, res) => {
+  const state = getEnhancedMixerState();
+  res.json(state);
+});
 
-  const [status, data1, data2] = args;
-  const command = status & 0xF0;
-  const channel = (status & 0x0F) + 1;
+// New endpoint to get MCU constants for your frontend
+app.get('/api/mcu-constants', (req, res) => {
+  res.json(MCU);
+});
 
-  if (command === 0xB0) {
-    switch (data1) {
-      case 0x0A: update(channel, 'pan', data2 - 64); break;
-      case 0x3C: update(channel, 'mute', data2 > 0); break;
-      case 0x3D: update(channel, 'solo', data2 > 0); break;
-      case 0x3E: update(channel, 'recordArm', data2 > 0); break;
-      default:
-        console.log(`Unhandled CC | CH ${channel} | CC ${data1}: ${data2}`);
-    }
-  } else if (command === 0xE0) {
-    const value = ((data2 << 7) | data1) - 8192;
-    update(channel, 'volume', value);
-  } else if (command === 0x90 || command === 0x80) {
-    const note = data1;
-    const isOn = (command === 0x90 && data2 > 0);
-
-    // MCU heartbeat is note 0 only
-    if (note === 0) {
-      update(channel, 'recordArmHeartbeat', isOn);
-    } else {
-      // Comment out next line to suppress these completely
-      console.log(`Skipping non-heartbeat note ${note} (0x${command.toString(16)})`);
-    }
-  } else if (status === 0xF0) {
-    decodeSysEx([status, data1, data2]);
-  } else {
-    console.warn(`Unhandled MIDI message (0x${status.toString(16)}): [${data1}, ${data2}]`);
+// Example of using the constants to send commands back to Logic
+function sendMCUCommand(command, value = 127) {
+  if (MCU[command] !== undefined) {
+    const noteNumber = MCU[command];
+    output.sendMessage([0x90, noteNumber, value]); // Note On
   }
 }
 
-module.exports = { decodeMessage, mixerState };
+// Your existing input selection logic remains the same
+console.log('Available MIDI inputs:');
+for (let i = 0; i < input.getPortCount(); i++) {
+  console.log(`${i}: ${input.getPortName(i)}`);
+}
+
+// Connect to your existing Logic Pro setup
+const logicPortIndex = 0; // or whatever port you're using
+input.openPort(logicPortIndex);
+input.setCallback((deltaTime, message) => {
+  processEnhancedMCUMessage(message);
+});
+
+console.log('Enhanced MCU decoder connected to Logic Pro');

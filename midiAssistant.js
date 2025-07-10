@@ -7,11 +7,34 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const app = express();
 const port = 3000;
 
+// expose mixerState from decoder and enhanced functionality
+const { mixerState } = require('./mcu/mcu-decoder');
+const { processEnhancedMCUMessage, getEnhancedMixerState, MCU } = require('./mcu-decoder');
+
+// serve static files from /public
+app.use(express.static('public'));
+
+// route to serve the mixer UI page
+app.get('/mixer', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'mixer.html'));
+});
+
 require('./mcu/mcu-listener.js'); // Runs MCU listener
 require('./mcu/mcu-decoder.js');  // Runs MCU decoder
-require('./mixer-state/mixer-listener'); // MIDI input listener
-const { mixerState } = require('./mixer-state/mixer-state'); // Global state
-require('./server'); // Starts the API
+
+// API to provide state as JSON
+app.use('/api', require('./api/state'));
+app.use('/api', require('./server'));
+
+// Enhanced MCU API routes
+app.get('/api/enhanced-mixer-state', (req, res) => {
+  const state = getEnhancedMixerState();
+  res.json(state);
+});
+
+app.get('/api/mcu-constants', (req, res) => {
+  res.json(MCU);
+});
 
 // === Gemini Setup ===
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -48,16 +71,49 @@ function connectIACBus2Only() {
     }
   }
 
-  console.log(`✅ MIDI INPUT:  ${inputPort !== -1 ? input.getPortName(inputPort) : '❌ Not Found'}`);
-  console.log(`✅ MIDI OUTPUT: ${outputPort !== -1 ? output.getPortName(outputPort) : '❌ Not Found'}`);
+  console.log(`MIDI INPUT:  ${inputPort !== -1 ? input.getPortName(inputPort) : 'Not Found'}`);
+  console.log(`MIDI OUTPUT: ${outputPort !== -1 ? output.getPortName(outputPort) : 'Not Found'}`);
 
   if (inputPort === -1 || outputPort === -1) {
-    console.error("❌ Could not connect to IAC Driver Bus 2. Please check your MIDI setup.");
+    console.error("Could not connect to IAC Driver Bus 2. Please check your MIDI setup.");
     process.exit(1);
   }
 }
 
 connectIACBus2Only();
+
+// Enhanced MIDI input handling
+input.on('message', (deltaTime, message) => {
+  // Process with enhanced decoder
+  const decoded = processEnhancedMCUMessage(message);
+  
+  if (decoded) {
+    console.log(`[Enhanced MCU] ${decoded.type}:`, decoded);
+    // Handle specific events if needed
+    handleEnhancedMCUEvent(decoded);
+  }
+});
+
+function handleEnhancedMCUEvent(event) {
+  switch (event.type) {
+    case 'fader':
+      console.log(`Fader ${event.channel}: ${event.value}`);
+      break;
+    case 'note_on':
+      if (event.action === 'mute') {
+        console.log(`Mute ${event.channel}: ${event.value}`);
+      } else if (event.action === 'transport') {
+        console.log(`Transport ${event.control}: ${event.velocity > 0}`);
+      }
+      break;
+    case 'encoder':
+      console.log(`Encoder ${event.channel}: ${event.direction > 0 ? 'CW' : 'CCW'} speed ${event.speed}`);
+      break;
+    case 'track_name':
+      console.log(`Track ${event.channel} name: "${event.name}"`);
+      break;
+  }
+}
 
 // === MIDI Actions ===
 const setVolume = (channel, volume) => {
@@ -81,6 +137,15 @@ const playNote = (note = 60, velocity = 100, duration = 1000) => {
   }, duration);
 };
 
+// Enhanced MCU command sending
+const sendMCUCommand = (command, value = 127) => {
+  if (MCU[command] !== undefined) {
+    const noteNumber = MCU[command];
+    output.sendMessage([0x90, noteNumber, value]); // Note On
+    console.log(`🎛️ MCU Command: ${command} (${noteNumber})`);
+  }
+};
+
 // === Prompt Builder ===
 const buildGeminiPrompt = (userPrompt) => `
 You are a MIDI assistant. Convert user input into structured JSON using one of the following actions:
@@ -88,6 +153,7 @@ You are a MIDI assistant. Convert user input into structured JSON using one of t
 - {"action": "setVolume", "channel": 1, "value": 100}
 - {"action": "mute", "channel": 2, "on": true}
 - {"action": "playNote", "note": 60, "velocity": 120, "duration": 500}
+- {"action": "mcuCommand", "command": "PLAY", "value": 127}
 
 Respond only with the JSON. Ignore small talk.
 Prompt: ${userPrompt}
@@ -122,6 +188,11 @@ app.post('/ask', async (req, res) => {
       if (command.action === 'playNote') {
         playNote(command.note, command.velocity, command.duration);
         return res.send(`Played note ${command.note}`);
+      }
+
+      if (command.action === 'mcuCommand') {
+        sendMCUCommand(command.command, command.value);
+        return res.send(`MCU command ${command.command} sent`);
       }
 
       return res.status(400).send('Unknown command');
@@ -165,6 +236,9 @@ app.post('/submit', async (req, res) => {
       } else if (command.action === 'playNote') {
         playNote(command.note, command.velocity, command.duration);
         resultMsg = `Played note ${command.note}`;
+      } else if (command.action === 'mcuCommand') {
+        sendMCUCommand(command.command, command.value);
+        resultMsg = `MCU command ${command.command} sent`;
       } else {
         resultMsg = 'Unknown command';
       }
@@ -196,5 +270,6 @@ app.get('/test-gemini', async (req, res) => {
 // === Launch Server ===
 app.listen(port, () => {
   console.log(`API Server running at http://localhost:${port}`);
-  console.log(`🎛️ MIDI Assistant is live`);
+  console.log(`MIDI Assistant is live`);
+  console.log(`Enhanced MCU decoder active`);
 });

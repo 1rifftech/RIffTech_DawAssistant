@@ -10,4 +10,11 @@ function updateMixerState(track, param, value) {
   mixerState.lastUpdate = Date.now();
 }
 
-module.exports = { mixerState, updateMixerState };
+function getMixerState() {
+  return {
+    tracks: mixerState.tracks,
+    lastUpdate: mixerState.lastUpdate
+  };
+}
+
+module.exports = { mixerState, updateMixerState, getMixerState };

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Logic Pro Mixer Status</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 2rem;
+      background: #f9f9f9;
+    }
+    h2 {
+      margin-bottom: 1rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+    }
+    th, td {
+      padding: 0.5rem;
+      border: 1px solid #ccc;
+      text-align: center;
+    }
+    .on {
+      background-color: #b3e5fc;
+    }
+  </style>
+</head>
+<body>
+  <h2>🎚️ Logic Pro Mixer Status</h2>
+  <table id="mixer">
+    <thead>
+      <tr>
+        <th>Track</th>
+        <th>Name</th>
+        <th>Volume</th>
+        <th>Pan</th>
+        <th>Mute</th>
+        <th>Solo</th>
+        <th>Record</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    async function fetchMixerState() {
+      try {
+        const res = await fetch('/api/state');
+        const state = await res.json();
+
+        const tbody = document.querySelector('#mixer tbody');
+        tbody.innerHTML = '';
+
+        Object.entries(state).forEach(([track, info]) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${track}</td>
+            <td>${info.name || ''}</td>
+            <td>${info.volume ?? ''}</td>
+            <td>${info.pan ?? ''}</td>
+            <td class="${info.mute ? 'on' : ''}">${info.mute ? '🔇' : ''}</td>
+            <td class="${info.solo ? 'on' : ''}">${info.solo ? '🟡' : ''}</td>
+            <td class="${info.recordArm ? 'on' : ''}">${info.recordArm ? '🔴' : ''}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        console.error('Failed to fetch mixer state:', err);
+      }
+    }
+
+    setInterval(fetchMixerState, 1000);
+    fetchMixerState();
+  </script>
+</body>
+</html>
