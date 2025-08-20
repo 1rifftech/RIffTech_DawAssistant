@@ -1,271 +1,187 @@
+// midiAssistant.js - Complete working version
 require('dotenv').config();
 const midi = require('midi');
 const express = require('express');
 const path = require('path');
+const http = require('http');
+const socketIo = require('socket.io');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { mixerState, decodeMCUMessage, decodeSysEx } = require('./mcu/mcu-decoder');
+const { db, logMixerEvent } = require('./mixer-state/database');
 
 const app = express();
-const port = 3000;
+const server = http.createServer(app);
+const io = socketIo(server);
 
-// expose mixerState from decoder and enhanced functionality
-const { mixerState } = require('./mcu/mcu-decoder.js');
-const { processEnhancedMCUMessage, getEnhancedMixerState, MCU } = require('./mcu/mcu-decoder.js');
-
-const { decodeMCUMessage, decodeSysEx } = require('./mcu/mcu-decoder');
-
-// serve static files from /public
-app.use(express.static('public'));
-
-// route to serve the mixer UI page
-app.get('/mixer', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'mixer.html'));
-});
-
-require('./mcu/mcu-listener.js'); // Runs MCU listener
-require('./mcu/mcu-decoder.js');  // Runs MCU decoder
-
-// API to provide state as JSON
-app.use('/api', require('./api/state'));
-app.use('/api', require('./server'));
-
-// Enhanced MCU API routes
-app.get('/api/enhanced-mixer-state', (req, res) => {
-  const state = getEnhancedMixerState();
-  res.json(state);
-});
-
-app.get('/api/mcu-constants', (req, res) => {
-  res.json(MCU);
-});
-
-// === Gemini Setup ===
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-
-// === View Engine ===
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.set('view engine', 'ejs');
-app.set('views', path.join(__dirname, 'views'));
+app.use(express.static(path.join(__dirname, 'public')));
 
-// === MIDI INPUT + OUTPUT SETUP (IAC Driver Bus 2 Only) ===
+// MIDI Setup
 const input = new midi.Input();
 const output = new midi.Output();
+let inputPort = -1, outputPort = -1;
 
-function connectIACBus2Only() {
-  let inputPort = -1;
-  let outputPort = -1;
-
-  for (let i = 0; i < input.getPortCount(); i++) {
-    if (input.getPortName(i).includes("IAC Driver Bus 2")) {
-      inputPort = i;
-      input.openPort(i);
-      input.ignoreTypes(false, false, false);
-      break;
-    }
-  }
-
-  for (let i = 0; i < output.getPortCount(); i++) {
-    if (output.getPortName(i).includes("IAC Driver Bus 2")) {
-      outputPort = i;
-      output.openPort(i);
-      break;
-    }
-  }
-
-  console.log(`MIDI INPUT:  ${inputPort !== -1 ? input.getPortName(inputPort) : 'Not Found'}`);
-  console.log(`MIDI OUTPUT: ${outputPort !== -1 ? output.getPortName(outputPort) : 'Not Found'}`);
-
-  if (inputPort === -1 || outputPort === -1) {
-    console.error("Could not connect to IAC Driver Bus 2. Please check your MIDI setup.");
-    process.exit(1);
+// Find MIDI ports
+for (let i = 0; i < input.getPortCount(); i++) {
+  if (input.getPortName(i).includes('IAC Driver Bus 2')) {
+    inputPort = i;
+    break;
   }
 }
 
-connectIACBus2Only();
+for (let i = 0; i < output.getPortCount(); i++) {
+  if (output.getPortName(i).includes('IAC Driver Bus 2')) {
+    outputPort = i;
+    break;
+  }
+}
 
-// Enhanced MIDI input handling
+if (inputPort >= 0) {
+  input.ignoreTypes(false, false, false);
+  input.openPort(inputPort);
+  console.log(`MIDI INPUT: ${input.getPortName(inputPort)}`);
+}
+
+if (outputPort >= 0) {
+  output.openPort(outputPort);
+  console.log(`MIDI OUTPUT: ${output.getPortName(outputPort)}`);
+}
+
+// MIDI Message Processing
+let sysexBuffer = [];
+let inSysex = false;
+
 input.on('message', (deltaTime, message) => {
-  // Process with enhanced decoder
-      decodeMCUMessage(message);
+  console.log('MIDI IN:', message);
+  
+  if (message[0] === 0xF0) {
+    inSysex = true;
+    sysexBuffer = [...message];
+  } else if (inSysex) {
+    sysexBuffer.push(...message);
+    if (message.includes(0xF7)) {
+      inSysex = false;
+      decodeSysEx(sysexBuffer);
+      sysexBuffer = [];
+    }
+  } else {
+    decodeMCUMessage(message);
+  }
+  
+  // Emit to WebSocket clients
+  io.emit('mixerUpdate', getMixerState());
 });
 
-function handleEnhancedMCUEvent(event) {
-  switch (event.type) {
-    case 'fader':
-      console.log(`Fader ${event.channel}: ${event.value}`);
-      break;
-    case 'note_on':
-      if (event.action === 'mute') {
-        console.log(`Mute ${event.channel}: ${event.value}`);
-      } else if (event.action === 'transport') {
-        console.log(`Transport ${event.control}: ${event.velocity > 0}`);
-      }
-      break;
-    case 'encoder':
-      console.log(`Encoder ${event.channel}: ${event.direction > 0 ? 'CW' : 'CCW'} speed ${event.speed}`);
-      break;
-    case 'track_name':
-      console.log(`Track ${event.channel} name: "${event.name}"`);
-      break;
-  }
+// Get current mixer state
+function getMixerState() {
+  return {
+    timestamp: Date.now(),
+    tracks: mixerState.tracks.map((track, i) => ({
+      id: i + 1,
+      name: track.trackName || `Track ${i + 1}`,
+      volume: track.volume,
+      pan: track.pan,
+      mute: track.mute,
+      solo: track.solo,
+      armed: track.record,
+      meter: mixerState.meters[i] || 0
+    })),
+    transport: mixerState.transport
+  };
 }
 
-// === MIDI Actions ===
-const setVolume = (channel, volume) => {
-  const status = 0xB0 + (channel - 1);
-  output.sendMessage([status, 7, volume]);
-  console.log(`🎚️ Volume → Channel ${channel}, Volume ${volume}`);
-};
+// API Routes
+app.get('/api/mixer/state', (req, res) => {
+  res.json(getMixerState());
+});
 
-const setMute = (channel, on) => {
-  const status = 0xB0 + (channel - 1);
-  const value = on ? 127 : 0;
-  output.sendMessage([status, 78, value]);
-  console.log(`🔇 Mute → Channel ${channel}, ${on ? 'ON' : 'OFF'}`);
-};
+app.get('/api/mixer/history', (req, res) => {
+  const limit = parseInt(req.query.limit) || 100;
+  db.all(`
+    SELECT * FROM mixer_events 
+    ORDER BY timestamp DESC 
+    LIMIT ?
+  `, [limit], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
+});
 
-const playNote = (note = 60, velocity = 100, duration = 1000) => {
-  output.sendMessage([0x90, note, velocity]);
-  setTimeout(() => {
-    output.sendMessage([0x80, note, 0]);
-    console.log(`🎵 Note ${note} played and released`);
-  }, duration);
-};
-
-// Enhanced MCU command sending
-const sendMCUCommand = (command, value = 127) => {
-  if (MCU[command] !== undefined) {
-    const noteNumber = MCU[command];
-    output.sendMessage([0x90, noteNumber, value]); // Note On
-    console.log(`🎛️ MCU Command: ${command} (${noteNumber})`);
-  }
-};
-
-// === Prompt Builder ===
-const buildGeminiPrompt = (userPrompt) => `
-You are a MIDI assistant. Convert user input into structured JSON using one of the following actions:
-
-- {"action": "setVolume", "channel": 1, "value": 100}
-- {"action": "mute", "channel": 2, "on": true}
-- {"action": "playNote", "note": 60, "velocity": 120, "duration": 500}
-- {"action": "mcuCommand", "command": "PLAY", "value": 127}
-
-Respond only with the JSON. Ignore small talk.
-Prompt: ${userPrompt}
-`;
-
-// === API Routes ===
-app.post('/ask', async (req, res) => {
-  const { prompt } = req.body;
-  if (!prompt) return res.status(400).send('Missing prompt');
-
+app.post('/api/mixer/control', (req, res) => {
+  const { channel, control, value } = req.body;
+  
   try {
-    const result = await model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: buildGeminiPrompt(prompt) }] }]
-    });
-
-    const outputText = result.response.text();
-    console.log('🤖 Gemini Response:\n', outputText);
-
-    try {
-      const command = JSON.parse(outputText);
-
-      if (command.action === 'setVolume') {
-        setVolume(command.channel, command.value);
-        return res.send(`Volume set to ${command.value} on channel ${command.channel}`);
-      }
-
-      if (command.action === 'mute') {
-        setMute(command.channel, command.on);
-        return res.send(`Mute ${command.on ? 'ON' : 'OFF'} on channel ${command.channel}`);
-      }
-
-      if (command.action === 'playNote') {
-        playNote(command.note, command.velocity, command.duration);
-        return res.send(`Played note ${command.note}`);
-      }
-
-      if (command.action === 'mcuCommand') {
-        sendMCUCommand(command.command, command.value);
-        return res.send(`MCU command ${command.command} sent`);
-      }
-
-      return res.status(400).send('Unknown command');
-    } catch (err) {
-      return res.status(500).send(`Failed to parse Gemini response: ${err.message}`);
+    // Send MIDI command based on control type
+    if (control === 'volume' && channel >= 0 && channel < 8) {
+      const lsb = value & 0x7F;
+      const msb = (value >> 7) & 0x7F;
+      output.sendMessage([0xE0 | channel, lsb, msb]);
     }
-  } catch (err) {
-    console.error(err);
-    res.status(500).send('Gemini API Error');
-  }
-});
-
-// === Web UI Routes ===
-app.get('/', (req, res) => {
-  res.render('index', { result: null });
-});
-
-app.post('/submit', async (req, res) => {
-  const prompt = req.body.prompt;
-  if (!prompt) return res.render('index', { result: 'Missing prompt' });
-
-  try {
-    const result = await model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: buildGeminiPrompt(prompt) }] }]
-    });
-
-    const outputText = result.response.text();
-    console.log('Gemini Web Response:\n', outputText);
-
-    let resultMsg = '';
-
-    try {
-      const command = JSON.parse(outputText);
-
-      if (command.action === 'setVolume') {
-        setVolume(command.channel, command.value);
-        resultMsg = `Volume set to ${command.value} on channel ${command.channel}`;
-      } else if (command.action === 'mute') {
-        setMute(command.channel, command.on);
-        resultMsg = `Mute ${command.on ? 'ON' : 'OFF'} on channel ${command.channel}`;
-      } else if (command.action === 'playNote') {
-        playNote(command.note, command.velocity, command.duration);
-        resultMsg = `Played note ${command.note}`;
-      } else if (command.action === 'mcuCommand') {
-        sendMCUCommand(command.command, command.value);
-        resultMsg = `MCU command ${command.command} sent`;
-      } else {
-        resultMsg = 'Unknown command';
-      }
-    } catch (err) {
-      resultMsg = `Failed to parse response: ${err.message}`;
+    else if (control === 'mute' && channel >= 0 && channel < 8) {
+      output.sendMessage([0x90, 0x10 + channel, value ? 0x7F : 0x00]);
     }
-
-    res.render('index', { result: resultMsg });
-
-  } catch (err) {
-    console.error(err);
-    res.render('index', { result: 'Gemini API Error' });
+    else if (control === 'play') {
+      output.sendMessage([0x90, 0x5E, 0x7F]);
+    }
+    else if (control === 'stop') {
+      output.sendMessage([0x90, 0x5D, 0x7F]);
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
-// === Gemini Test Endpoint ===
-app.get('/test-gemini', async (req, res) => {
+// AI Analysis endpoint
+app.post('/api/ai/analyze', async (req, res) => {
   try {
-    const result = await model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: "Say hi" }] }]
+    const state = getMixerState();
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+    
+    const prompt = `As a professional mixing engineer, analyze this DAW mixer state and provide specific suggestions:
+    
+    ${JSON.stringify(state, null, 2)}
+    
+    Provide:
+    1. Current mix balance assessment
+    2. Potential issues
+    3. Specific improvement suggestions`;
+    
+    const result = await model.generateContent(prompt);
+    res.json({ 
+      analysis: result.response.text(),
+      state 
     });
-    res.send(result.response.text());
-  } catch (err) {
-    console.error(err);
-    res.status(500).send("Gemini test failed: " + err);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
-// === Launch Server ===
-app.listen(port, () => {
-  console.log(`API Server running at http://localhost:${port}`);
-  console.log(`MIDI Assistant is live`);
-  console.log(`Enhanced MCU decoder active`);
+// WebSocket connection
+io.on('connection', (socket) => {
+  console.log('Client connected');
+  socket.emit('mixerUpdate', getMixerState());
+    
+  socket.on('disconnect', () => {
+    console.log('Client disconnected');
+  });
+});
+
+// Start server
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`API Server running at http://localhost:${PORT}`);
+  console.log('MIDI Assistant is live');
+  console.log('Enhanced MCU decoder active');
+});
+
+// Cleanup
+process.on('SIGINT', () => {
+  console.log('\nShutting down...');
+  input.closePort();
+  output.closePort();
+  db.close();
+  process.exit(0);
 });
