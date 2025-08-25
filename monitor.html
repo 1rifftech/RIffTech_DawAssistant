@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCU Decoder - Live Data Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(0,0,0,0.3);
+            padding: 8px 15px;
+            border-radius: 20px;
+        }
+        
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #ff4444;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-dot.connected {
+            background: #44ff44;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .channel-strip {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 15px;
+            transition: all 0.3s;
+        }
+        
+        .channel-strip.selected {
+            border-color: #667eea;
+            box-shadow: 0 0 20px rgba(102, 126, 234, 0.3);
+        }
+        
+        .channel-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #333;
+        }
+        
+        .channel-number {
+            font-size: 18px;
+            font-weight: bold;
+            color: #667eea;
+        }
+        
+        .channel-name {
+            font-size: 14px;
+            color: #aaa;
+            text-align: right;
+            max-width: 150px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .fader-container {
+            margin: 15px 0;
+        }
+        
+        .fader {
+            width: 100%;
+            height: 100px;
+            background: #0a0a0a;
+            border: 1px solid #444;
+            border-radius: 4px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .fader-fill {
+            position: absolute;
+            bottom: 0;
+            width: 100%;
+            background: linear-gradient(to top, #667eea, #764ba2);
+            transition: height 0.1s;
+        }
+        
+        .fader-value {
+            position: absolute;
+            width: 100%;
+            text-align: center;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 12px;
+            font-weight: bold;
+            text-shadow: 0 0 4px rgba(0,0,0,0.8);
+            z-index: 1;
+        }
+        
+        .meter {
+            height: 8px;
+            background: #0a0a0a;
+            border: 1px solid #444;
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        
+        .meter-fill {
+            height: 100%;
+            background: linear-gradient(to right, #44ff44 0%, #ffff44 70%, #ff4444 100%);
+            transition: width 0.05s;
+        }
+        
+        .vpot-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 10px 0;
+        }
+        
+        .vpot {
+            width: 40px;
+            height: 40px;
+            border: 2px solid #444;
+            border-radius: 50%;
+            position: relative;
+        }
+        
+        .vpot-indicator {
+            position: absolute;
+            width: 2px;
+            height: 15px;
+            background: #667eea;
+            left: 50%;
+            top: 50%;
+            transform-origin: bottom;
+            transform: translateX(-50%) translateY(-100%) rotate(0deg);
+            transition: transform 0.1s;
+        }
+        
+        .buttons {
+            display: flex;
+            gap: 5px;
+            margin: 10px 0;
+        }
+        
+        .btn {
+            flex: 1;
+            padding: 8px;
+            background: #2a2a2a;
+            border: 1px solid #444;
+            border-radius: 4px;
+            font-size: 11px;
+            text-align: center;
+            transition: all 0.1s;
+        }
+        
+        .btn.active {
+            background: #667eea;
+            border-color: #667eea;
+            box-shadow: 0 0 10px rgba(102, 126, 234, 0.5);
+        }
+        
+        .btn.mute.active {
+            background: #ff4444;
+            border-color: #ff4444;
+            box-shadow: 0 0 10px rgba(255, 68, 68, 0.5);
+        }
+        
+        .btn.solo.active {
+            background: #ffaa00;
+            border-color: #ffaa00;
+            box-shadow: 0 0 10px rgba(255, 170, 0, 0.5);
+        }
+        
+        .btn.rec.active {
+            background: #ff0000;
+            border-color: #ff0000;
+            box-shadow: 0 0 10px rgba(255, 0, 0, 0.5);
+            animation: recPulse 1s infinite;
+        }
+        
+        @keyframes recPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        
+        .transport-section {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .transport-controls {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin: 20px 0;
+        }
+        
+        .transport-btn {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: #2a2a2a;
+            border: 2px solid #444;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            cursor: pointer;
+            transition: all 0.1s;
+        }
+        
+        .transport-btn.active {
+            background: #667eea;
+            border-color: #667eea;
+            box-shadow: 0 0 20px rgba(102, 126, 234, 0.5);
+        }
+        
+        .transport-btn.record.active {
+            background: #ff0000;
+            border-color: #ff0000;
+            box-shadow: 0 0 20px rgba(255, 0, 0, 0.5);
+        }
+        
+        .timecode {
+            background: #0a0a0a;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 24px;
+            text-align: center;
+            letter-spacing: 2px;
+        }
+        
+        .automation-section, .assignment-section {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .section-title {
+            font-size: 14px;
+            color: #888;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .mode-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        
+        .mode-btn {
+            padding: 8px 15px;
+            background: #2a2a2a;
+            border: 1px solid #444;
+            border-radius: 4px;
+            font-size: 12px;
+            transition: all 0.1s;
+        }
+        
+        .mode-btn.active {
+            background: #667eea;
+            border-color: #667eea;
+        }
+        
+        .raw-data {
+            background: #0a0a0a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .raw-message {
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            padding: 4px 0;
+            border-bottom: 1px solid #222;
+            display: flex;
+            gap: 15px;
+        }
+        
+        .timestamp {
+            color: #666;
+        }
+        
+        .message-type {
+            color: #667eea;
+            min-width: 80px;
+        }
+        
+        .message-data {
+            color: #aaa;
+            flex: 1;
+        }
+        
+        .message-hex {
+            color: #555;
+            font-size: 10px;
+        }
+        
+        .master-section {
+            background: #1a1a1a;
+            border: 2px solid #667eea;
+            border-radius: 8px;
+            padding: 15px;
+        }
+        
+        .lcd-display {
+            background: #001a00;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 10px;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+            color: #00ff00;
+            font-size: 12px;
+            min-height: 40px;
+            white-space: pre;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>MCU Decoder - Live Monitor</h1>
+        <div class="connection-status">
+            <div class="status-dot" id="statusDot"></div>
+            <span id="statusText">Disconnected</span>
+        </div>
+    </div>
+    
+    <div class="transport-section">
+        <div class="section-title">Transport</div>
+        <div class="timecode" id="timecode">00:00:00:00</div>
+        <div class="transport-controls">
+            <div class="transport-btn" id="rewind" data-control="rewind">⏪</div>
+            <div class="transport-btn" id="stop" data-control="stop">⏹</div>
+            <div class="transport-btn" id="play" data-control="play">▶</div>
+            <div class="transport-btn record" id="record" data-control="record">⏺</div>
+            <div class="transport-btn" id="fastForward" data-control="fastForward">⏩</div>
+        </div>
+        <div class="lcd-display" id="mainDisplay">Main Display</div>
+    </div>
+    
+    <div class="container" id="channelContainer">
+        <!-- Channels will be generated here -->
+    </div>
+    
+    <div class="master-section">
+        <div class="channel-header">
+            <span class="channel-number">MASTER</span>
+        </div>
+        <div class="fader-container">
+            <div class="fader">
+                <div class="fader-fill" id="masterFaderFill"></div>
+                <div class="fader-value" id="masterFaderValue">0</div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="automation-section">
+        <div class="section-title">Automation</div>
+        <div class="mode-buttons">
+            <div class="mode-btn" id="auto-read">READ</div>
+            <div class="mode-btn" id="auto-write">WRITE</div>
+            <div class="mode-btn" id="auto-trim">TRIM</div>
+            <div class="mode-btn" id="auto-touch">TOUCH</div>
+            <div class="mode-btn" id="auto-latch">LATCH</div>
+        </div>
+    </div>
+    
+    <div class="assignment-section">
+        <div class="section-title">Assignment</div>
+        <div class="mode-buttons">
+            <div class="mode-btn" id="assign-track">TRACK</div>
+            <div class="mode-btn" id="assign-send">SEND</div>
+            <div class="mode-btn" id="assign-pan">PAN</div>
+            <div class="mode-btn" id="assign-plugin">PLUGIN</div>
+            <div class="mode-btn" id="assign-eq">EQ</div>
+            <div class="mode-btn" id="assign-instrument">INST</div>
+        </div>
+    </div>
+    
+    <div class="raw-data">
+        <div class="section-title">Raw MIDI Data Stream</div>
+        <div id="rawDataContainer"></div>
+    </div>
+    
+    <script>
+        let ws = null;
+        let state = {};
+        const maxRawMessages = 100;
+        const rawMessages = [];
+        
+        // Create channel strips
+        function createChannels() {
+            const container = document.getElementById('channelContainer');
+            for (let i = 0; i < 8; i++) {
+                const strip = document.createElement('div');
+                strip.className = 'channel-strip';
+                strip.id = `channel-${i}`;
+                strip.innerHTML = `
+                    <div class="channel-header">
+                        <span class="channel-number">CH ${i + 1}</span>
+                        <span class="channel-name" id="ch${i}-name">--</span>
+                    </div>
+                    <div class="lcd-display" id="ch${i}-lcd-upper">Upper Display</div>
+                    <div class="lcd-display" id="ch${i}-lcd-lower">Lower Display</div>
+                    <div class="fader-container">
+                        <div class="fader">
+                            <div class="fader-fill" id="ch${i}-fader-fill"></div>
+                            <div class="fader-value" id="ch${i}-fader-value">0</div>
+                        </div>
+                    </div>
+                    <div class="meter">
+                        <div class="meter-fill" id="ch${i}-meter"></div>
+                    </div>
+                    <div class="vpot-container">
+                        <div class="vpot">
+                            <div class="vpot-indicator" id="ch${i}-vpot"></div>
+                        </div>
+                        <span id="ch${i}-vpot-value">PAN: C</span>
+                    </div>
+                    <div class="buttons">
+                        <div class="btn rec" id="ch${i}-rec">REC</div>
+                        <div class="btn solo" id="ch${i}-solo">SOLO</div>
+                        <div class="btn mute" id="ch${i}-mute">MUTE</div>
+                        <div class="btn" id="ch${i}-select">SEL</div>
+                    </div>
+                `;
+                container.appendChild(strip);
+            }
+        }
+        
+        // Connect WebSocket
+        function connect() {
+            ws = new WebSocket('ws://localhost:8080');
+            
+            ws.onopen = () => {
+                console.log('Connected to MCU Decoder');
+                document.getElementById('statusDot').classList.add('connected');
+                document.getElementById('statusText').textContent = 'Connected';
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                
+                if (data.event === 'connected') {
+                    state = data.state;
+                    updateUI(state);
+                } else if (data.event === 'midi') {
+                    handleMidiMessage(data.data);
+                    if (data.state) {
+                        state = data.state;
+                        updateUI(state);
+                    }
+                }
+            };
+            
+            ws.onclose = () => {
+                console.log('Disconnected from MCU Decoder');
+                document.getElementById('statusDot').classList.remove('connected');
+                document.getElementById('statusText').textContent = 'Disconnected';
+                setTimeout(connect, 2000);
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+        
+        // Handle MIDI messages
+        function handleMidiMessage(data) {
+            // Add to raw data display
+            const timestamp = new Date(data.timestamp).toLocaleTimeString();
+            const hex = data.raw ? data.raw.map(b => b.toString(16).padStart(2, '0')).join(' ') : '';
+            
+            let messageInfo = '';
+            if (data.type === 'button') {
+                messageInfo = `${data.button} ${data.pressed ? 'ON' : 'OFF'}`;
+                if (data.channel !== undefined) messageInfo = `CH${data.channel + 1} ${messageInfo}`;
+            } else if (data.type === 'fader') {
+                messageInfo = `${data.channel === 'master' ? 'MASTER' : 'CH' + (data.channel + 1)} = ${data.value}`;
+            } else if (data.type === 'vPot') {
+                messageInfo = `CH${data.channel + 1} ${data.direction} speed:${data.speed}`;
+            } else if (data.type === 'jog') {
+                messageInfo = `${data.direction} speed:${data.speed}`;
+            } else if (data.type === 'meter') {
+                messageInfo = `CH${data.channel + 1} level:${data.level}`;
+            } else if (data.type === 'lcd') {
+                messageInfo = `LCD @${data.lcd.offset}: "${data.lcd.text}"`;
+            } else if (data.type === 'sysex') {
+                messageInfo = 'SysEx data';
+            }
+            
+            rawMessages.unshift({
+                timestamp,
+                type: data.type,
+                info: messageInfo,
+                hex
+            });
+            
+            if (rawMessages.length > maxRawMessages) {
+                rawMessages.pop();
+            }
+            
+            updateRawData();
+        }
+        
+        // Update UI with state
+        function updateUI(state) {
+            // Update channels
+            state.channels.forEach((ch, i) => {
+                // Fader
+                const faderHeight = (ch.fader / 16383) * 100;
+                document.getElementById(`ch${i}-fader-fill`).style.height = `${faderHeight}%`;
+                document.getElementById(`ch${i}-fader-value`).textContent = Math.round(faderHeight);
+                
+                // Meter
+                const meterWidth = (ch.meter / 15) * 100;
+                document.getElementById(`ch${i}-meter`).style.width = `${meterWidth}%`;
+                
+                // V-Pot
+                const vpotRotation = ((ch.vPot & 0x0F) / 15) * 270 - 135;
+                document.getElementById(`ch${i}-vpot`).style.transform = 
+                    `translateX(-50%) translateY(-100%) rotate(${vpotRotation}deg)`;
+                
+                // Buttons
+                document.getElementById(`ch${i}-rec`).classList.toggle('active', ch.rec);
+                document.getElementById(`ch${i}-solo`).classList.toggle('active', ch.solo);
+                document.getElementById(`ch${i}-mute`).classList.toggle('active', ch.mute);
+                document.getElementById(`ch${i}-select`).classList.toggle('active', ch.select);
+                
+                // Channel strip selection
+                document.getElementById(`channel-${i}`).classList.toggle('selected', ch.select);
+                
+                // LCD displays
+                if (ch.displayUpper) {
+                    document.getElementById(`ch${i}-lcd-upper`).textContent = ch.displayUpper;
+                }
+                if (ch.displayLower) {
+                    document.getElementById(`ch${i}-lcd-lower`).textContent = ch.displayLower;
+                }
+                if (ch.name) {
+                    document.getElementById(`ch${i}-name`).textContent = ch.name;
+                }
+            });
+            
+            // Master fader
+            const masterHeight = (state.masterFader / 16383) * 100;
+            document.getElementById('masterFaderFill').style.height = `${masterHeight}%`;
+            document.getElementById('masterFaderValue').textContent = Math.round(masterHeight);
+            
+            // Transport
+            document.getElementById('play').classList.toggle('active', state.transport.play);
+            document.getElementById('stop').classList.toggle('active', state.transport.stop);
+            document.getElementById('record').classList.toggle('active', state.transport.record);
+            document.getElementById('rewind').classList.toggle('active', state.transport.rewind);
+            document.getElementById('fastForward').classList.toggle('active', state.transport.fastForward);
+            
+            // Automation
+            document.getElementById('auto-read').classList.toggle('active', state.automation.read);
+            document.getElementById('auto-write').classList.toggle('active', state.automation.write);
+            document.getElementById('auto-trim').classList.toggle('active', state.automation.trim);
+            document.getElementById('auto-touch').classList.toggle('active', state.automation.touch);
+            document.getElementById('auto-latch').classList.toggle('active', state.automation.latch);
+            
+            // Assignment
+            document.getElementById('assign-track').classList.toggle('active', state.assignment.track);
+            document.getElementById('assign-send').classList.toggle('active', state.assignment.send);
+            document.getElementById('assign-pan').classList.toggle('active', state.assignment.pan);
+            document.getElementById('assign-plugin').classList.toggle('active', state.assignment.plugin);
+            document.getElementById('assign-eq').classList.toggle('active', state.assignment.eq);
+            document.getElementById('assign-instrument').classList.toggle('active', state.assignment.instrument);
+            
+            // Main display
+            if (state.display.mainTime) {
+                document.getElementById('mainDisplay').textContent = state.display.mainTime;
+            }
+        }
+        
+        // Update raw data display
+        function updateRawData() {
+            const container = document.getElementById('rawDataContainer');
+            container.innerHTML = rawMessages.map(msg => `
+                <div class="raw-message">
+                    <span class="timestamp">${msg.timestamp}</span>
+                    <span class="message-type">${msg.type.toUpperCase()}</span>
+                    <span class="message-data">${msg.info}</span>
+                    <span class="message-hex">[${msg.hex}]</span>
+                </div>
+            `).join('');
+        }
+        
+        // Initialize
+        createChannels();
+        connect();
+    </script>
+</body>
+</html>
